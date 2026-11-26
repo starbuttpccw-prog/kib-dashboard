@@ -61,8 +61,23 @@ def load_followup_table():
             status, done = downloader.next_chunk()
         
         fh.seek(0)
-        # 讀取 Excel（預設讀第一個 sheet，或指定 sheet_name）
-        df = pd.read_excel(fh, sheet_name=0)
+        # 嘗試跳過前面說明行，搵真正標題
+        # 先讀前 15 行睇結構
+        preview = pd.read_excel(fh, sheet_name=0, header=None, nrows=15)
+        fh.seek(0)
+        
+        # 搵包含「QC」或「OS」或「地盤」嘅行作為標題
+        header_row = 0
+        for i, row in preview.iterrows():
+            row_str = ' '.join(str(x) for x in row.values if pd.notna(x))
+            if any(k in row_str for k in ['QC', 'OS', '地盤', '金額', '狀態']):
+                header_row = i
+                break
+        
+        df = pd.read_excel(fh, sheet_name=0, header=header_row)
+        # 清除全空欄
+        df = df.dropna(axis=1, how='all')
+        df = df.dropna(axis=0, how='all')
         return df
     except Exception as e:
         st.error(f"讀取跟進表失敗：{e}")
