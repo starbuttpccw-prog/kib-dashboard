@@ -48,14 +48,8 @@ def load_followup_table(file_id):
                     fh.seek(0)
                     try:
                         fh.seek(0)
-                        # 先試讀 1000 行，避免太大
-                        temp = pd.read_excel(fh, sheet_name=sheet, header=hdr, nrows=1000)
-                        if len(temp) >= 1000:
-                            # 如果有 1000 行，再試讀全部
-                            fh.seek(0)
-                            temp_full = pd.read_excel(fh, sheet_name=sheet, header=hdr)
-                            if len(temp_full) > 1000:
-                                temp = temp_full
+                        # 安全讀取最多 2000 行
+                        temp = pd.read_excel(fh, sheet_name=sheet, header=hdr, nrows=2000)
                     except Exception:
                         continue
                     if temp.empty:
