@@ -68,6 +68,140 @@ def load_followup_table(file_id):
 FOLLOWUP_ID = "1o430tei9i5SrDqvvhe3TpUDx7icGRmXf"
 KB_FILE_ID = "17xlaPUUkWS0tE_L0aC0Sj4vF-_QuJ-Ql"
 
+def create_invoice_sheet(os_no, site, work, amount, qc_no="", qty=1):
+    """用 zip 層面抄 sheet，保留 logo + 印"""
+    try:
+        import zipfile
+        import shutil
+        
+        # 下載
+        request = service.files().get_media(fileId=KB_FILE_ID)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        fh.seek(0)
+
+        # 搵 template 同新編號
+        wb_temp = openpyxl.load_workbook(fh)
+        candidates = [n for n in wb_temp.sheetnames if re.match(r'^KB26\d{4}$', n)]
+        if not candidates:
+            return False, "搵唔到有效 template"
+        
+        template = sorted(candidates)[-1]
+        last_num = int(template[2:])
+        new_name = f"KB{last_num + 1}"
+        new_sheet_id = last_num + 1
+        
+        st.info(f"Template: {template} → 新編號: {new_name}")
+        unit_rate = round(amount / qty, 2) if qty else amount
+
+        # Zip 層面抄
+        fh.seek(0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with zipfile.ZipFile(fh, 'r') as z:
+                z.extractall(tmpdir)
+            
+            # 搵 template sheet 嘅 rid
+            wb_xml = os.path.join(tmpdir, 'xl', 'workbook.xml')
+            with open(wb_xml, 'r', encoding='utf-8') as f:
+                wb_content = f.read()
+            
+            rid_match = re.search(rf'name="{re.escape(template)}"[^>]*r:id="([^"]+)"', wb_content)
+            if not rid_match:
+                return False, "搵唔到 sheet rid"
+            rid = rid_match.group(1)
+            
+            rels_path = os.path.join(tmpdir, 'xl', '_rels', 'workbook.xml.rels')
+            with open(rels_path, 'r', encoding='utf-8') as f:
+                rels_content = f.read()
+            
+            target_match = re.search(rf'Id="{rid}"[^>]*Target="([^"]+)"', rels_content)
+            if not target_match:
+                return False, "搵唔到 sheet path"
+            sheet_rel_path = target_match.group(1)
+            
+            # 抄 sheet XML
+            src_sheet = os.path.join(tmpdir, 'xl', sheet_rel_path)
+            new_sheet_filename = f'sheet{new_sheet_id}.xml'
+            dst_sheet = os.path.join(tmpdir, 'xl', 'worksheets', new_sheet_filename)
+            shutil.copy2(src_sheet, dst_sheet)
+            
+            # 抄 drawing rels（如果有 logo/印）
+            src_rels_name = os.path.basename(sheet_rel_path) + '.rels'
+            src_rels = os.path.join(tmpdir, 'xl', 'worksheets', '_rels', src_rels_name)
+            if os.path.exists(src_rels):
+                dst_rels = os.path.join(tmpdir, 'xl', 'worksheets', '_rels', new_sheet_filename + '.rels')
+                os.makedirs(os.path.dirname(dst_rels), exist_ok=True)
+                shutil.copy2(src_rels, dst_rels)
+            
+            # 更新 workbook.xml
+            new_rid = f'rId{new_sheet_id}'
+            sheet_entry = f'<sheet name="{new_name}" sheetId="{new_sheet_id}" r:id="{new_rid}"/>'
+            if '</sheets>' in wb_content:
+                wb_content = wb_content.replace('</sheets>', sheet_entry + '</sheets>')
+            with open(wb_xml, 'w', encoding='utf-8') as f:
+                f.write(wb_content)
+            
+            # 更新 rels
+            new_rel = f'<Relationship Id="{new_rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/{new_sheet_filename}"/>'
+            if '</Relationships>' in rels_content:
+                rels_content = rels_content.replace('</Relationships>', new_rel + '</Relationships>')
+            with open(rels_path, 'w', encoding='utf-8') as f:
+                f.write(rels_content)
+            
+            # 重新打包
+            result_path = os.path.join(tmpdir, 'result.xlsx')
+            with zipfile.ZipFile(result_path, 'w', zipfile.ZIP_DEFLATED) as zout:
+                for root, dirs, files in os.walk(tmpdir):
+                    for file in files:
+                        if file == 'result.xlsx':
+                            continue
+                        full_path = os.path.join(root, file)
+                        arcname = os.path.relpath(full_path, tmpdir)
+                        zout.write(full_path, arcname)
+            
+            # 用 openpyxl 填資料
+            wb = openpyxl.load_workbook(result_path)
+            if new_name not in wb.sheetnames:
+                return False, "新 sheet 未成功加入"
+            target = wb[new_name]
+            
+            for r in target.iter_rows(min_row=1, max_row=15, max_col=8):
+                for cell in r:
+                    if cell.value and isinstance(cell.value, str):
+                        if "Invoice No" in cell.value:
+                            target.cell(row=cell.row, column=cell.column + 1).value = new_name
+                        if "Your Order No" in cell.value or "Order No" in cell.value:
+                            target.cell(row=cell.row, column=cell.column + 1).value = os_no
+                        if "Quotation" in cell.value:
+                            target.cell(row=cell.row, column=cell.column + 1).value = qc_no
+                        if "Project" in cell.value:
+                            target.cell(row=cell.row, column=cell.column + 1).value = f"{os_no} - {site}"
+            
+            target['B19'] = work
+            target['D19'] = qty
+            target['F19'] = unit_rate
+            target['G19'] = amount
+            
+            # Summary 去最後
+            if 'Summary' in wb.sheetnames:
+                idx = wb.sheetnames.index('Summary')
+                if idx < len(wb.sheetnames) - 1:
+                    wb.move_sheet('Summary', offset=len(wb.sheetnames) - 1 - idx)
+            
+            wb.save(result_path)
+            
+            # 上傳
+            media = MediaFileUpload(result_path, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            service.files().update(fileId=KB_FILE_ID, media_body=media).execute()
+            
+            return True, new_name
+
+    except Exception as e:
+        return False, str(e)
+
 service = get_drive_service()
 if not service:
     st.stop()
@@ -151,7 +285,15 @@ elif page == "開發票":
                 st.write(f"**QC：** {qc_no or '未搵到'}")
                 
                 if amount > 0:
-                    st.info("發票建立功能暫時停用（避免複雜錯誤）。資料已提取，之後可以加返。")
+                    final_work = work or f"Work for {os_no}"
+                    final_site = site or os_no
+                    with st.spinner("正在建立發票..."):
+                        success, result = create_invoice_sheet(os_no, final_site, final_work, amount, qc_no)
+                    if success:
+                        st.success(f"已建立：{result}")
+                        st.info("請到 Google Drive 打開 KB260001.xlsx 檢查")
+                    else:
+                        st.error(f"失敗：{result}")
                 else:
                     st.warning("搵唔到金額")
 
