@@ -138,10 +138,18 @@ def create_invoice_sheet(os_no, site, work, amount, qc_no="", qty=1):
         target['F19'] = unit_rate
         target['G19'] = amount
 
+        # 確保 Summary 永遠喺最後
+        if 'Summary' in wb.sheetnames:
+            current_idx = wb.sheetnames.index('Summary')
+            offset = len(wb.sheetnames) - 1 - current_idx
+            if offset > 0:
+                wb.move_sheet('Summary', offset=offset)
+
         # 儲存上傳
         with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
             wb.save(tmp.name)
             tmp_path = tmp.name
+
 
         media = MediaFileUpload(tmp_path, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         service.files().update(fileId=KB_FILE_ID, media_body=media).execute()
