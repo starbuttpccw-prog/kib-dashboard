@@ -86,10 +86,9 @@ def load_followup():
 df = load_followup()
 
 # ========== Invoice Creation ==========
-def create_invoice_sheet(os_no, site, work, amount, qc_no=""):
+def create_invoice_sheet(os_no, site, work, amount, qc_no="", qty=1):
     """下載 KB260001，抄 sheet，填資料，上傳"""
     try:
-        # 下載
         request = service.files().get_media(fileId=KB_FILE_ID)
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
@@ -100,54 +99,54 @@ def create_invoice_sheet(os_no, site, work, amount, qc_no=""):
 
         wb = openpyxl.load_workbook(fh)
         
-        # 搵最新嘅正式發票 sheet（KB26xxxx 格式，排除 Summary）
-        template = None
-        candidates = [name for name in wb.sheetnames if name.startswith("KB26") and name != "Summary" and len(name) <= 10]
-        if candidates:
-            template = sorted(candidates)[-1]  # 最新嘅
-        else:
-            template = wb.sheetnames[-2] if len(wb.sheetnames) > 1 else wb.sheetnames[-1]
-
-        st.info(f"使用 template: {template}")
-
-        # 新 sheet 名
-        new_name = f"KB{datetime.now().strftime('%y%m%d%H%M')}"
-        if new_name in wb.sheetnames:
-            new_name += "a"
+        # 搵最新正式 KB26xxxx sheet
+        import re
+        candidates = [name for name in wb.sheetnames if re.match(r'^KB26\d{4}$', name)]
+        if not candidates:
+            return False, "搵唔到有效 template"
         
+        template = sorted(candidates)[-1]
+        last_num = int(template[2:])
+        new_name = f"KB{last_num + 1}"
+        
+        st.info(f"Template: {template} → 新編號: {new_name}")
+
         # 抄 sheet
         source = wb[template]
         target = wb.copy_worksheet(source)
         target.title = new_name
 
-        # 填資料（根據實際結構）
-        # Invoice No
-        for row in target.iter_rows(min_row=1, max_row=15, max_col=10):
-            for cell in row:
-                if cell.value and "Invoice No" in str(cell.value):
-                    # 右邊一格填新編號
-                    target.cell(row=cell.row, column=cell.column + 1).value = new_name
-                if cell.value and "Your Order No" in str(cell.value):
-                    target.cell(row=cell.row, column=cell.column + 1).value = os_no
-                if cell.value and "Quotation No" in str(cell.value):
-                    target.cell(row=cell.row, column=cell.column + 1).value = qc_no
-                if cell.value and "Project" in str(cell.value):
-                    target.cell(row=cell.row, column=cell.column + 1).value = f"{os_no} - {site}"
+        # 計算 unit rate
+        unit_rate = round(amount / qty, 2) if qty else amount
 
-        # 簡單填描述同金額（第19行附近）
+        # 填資料
+        for row in target.iter_rows(min_row=1, max_row=20, max_col=10):
+            for cell in row:
+                if cell.value and isinstance(cell.value, str):
+                    if "Invoice No" in cell.value:
+                        target.cell(row=cell.row, column=cell.column + 1).value = new_name
+                    if "Your Order No" in cell.value:
+                        target.cell(row=cell.row, column=cell.column + 1).value = os_no
+                    if "Quotation No" in cell.value:
+                        target.cell(row=cell.row, column=cell.column + 1).value = qc_no
+                    if "Project" in cell.value:
+                        target.cell(row=cell.row, column=cell.column + 1).value = f"{os_no} - {site}"
+
+        # 填 item
         target['B19'] = work
+        target['D19'] = qty
+        target['F19'] = unit_rate
         target['G19'] = amount
 
-        # 儲存到臨時檔
+        # 儲存上傳
         with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
             wb.save(tmp.name)
             tmp_path = tmp.name
 
-        # 上傳覆蓋
         media = MediaFileUpload(tmp_path, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         service.files().update(fileId=KB_FILE_ID, media_body=media).execute()
-        
         os.unlink(tmp_path)
+        
         return True, new_name
 
     except Exception as e:
@@ -182,25 +181,64 @@ elif page == "開發票":
     st.header("🧾 開發票")
     st.warning("實驗功能：會直接修改 KB260001.xlsx")
     
-    with st.form("invoice_form"):
-        os_no = st.text_input("OS 編號", placeholder="OS2600xxxx")
-        site = st.text_input("地盤")
-        work = st.text_input("工作內容")
-        amount = st.number_input("金額", min_value=0.0, step=100.0)
-        qc_no = st.text_input("報價編號（可選）", placeholder="QC260xxx")
-        submitted = st.form_submit_button("建立發票 Sheet", type="primary")
-        
-        if submitted:
-            if os_no and work and amount > 0:
-                with st.spinner("正在建立發票..."):
-                    success, result = create_invoice_sheet(os_no, site, work, amount, qc_no)
-                if success:
-                    st.success(f"已建立新 sheet：{result}")
-                    st.info("請到 Google Drive 打開 KB260001.xlsx 檢查，之後用 Excel Print Bot 出 PDF")
-                else:
-                    st.error(f"失敗：{result}")
+    os_no = st.text_input("OS 編號", placeholder="OS2600xxxx")
+    
+    if st.button("搜尋並建立發票", type="primary", use_container_width=True):
+        if not os_no:
+            st.error("請輸入 OS 編號")
+        elif df.empty:
+            st.error("讀唔到跟進表")
+        else:
+            # 從跟進表搜尋
+            search_str = os_no.lower().strip()
+            mask = df.astype(str).apply(
+                lambda col: col.str.lower().str.contains(search_str, na=False)
+            ).any(axis=1)
+            found = df[mask]
+            
+            if found.empty:
+                st.warning("跟進表搵唔到呢個 OS")
             else:
-                st.error("請填 OS、工作內容同金額")
+                st.success(f"找到 {len(found)} 筆記錄")
+                st.dataframe(found, use_container_width=True)
+                
+                # 嘗試提取資料（取第一筆）
+                row = found.iloc[0]
+                
+                # 嘗試搵欄位
+                site = ""
+                work = ""
+                amount = 0
+                qc_no = ""
+                
+                for col in found.columns:
+                    val = str(row[col]) if pd.notna(row[col]) else ""
+                    if any(k in col.lower() for k in ["地盤", "site", "project"]):
+                        site = val
+                    if any(k in col.lower() for k in ["工作", "描述", "desc", "content"]):
+                        work = val
+                    if any(k in col.lower() for k in ["金額", "amount", "價錢"]):
+                        try:
+                            amount = float(val.replace(",", "").replace("$", ""))
+                        except:
+                            pass
+                    if any(k in col.lower() for k in ["qc", "報價"]):
+                        qc_no = val
+                
+                st.write(f"**地盤：** {site or '未搵到'}")
+                st.write(f"**工作：** {work or '未搵到'}")
+                st.write(f"**金額：** {amount}")
+                st.write(f"**QC：** {qc_no or '未搵到'}")
+                
+                if amount > 0 and work:
+                    with st.spinner("正在建立發票..."):
+                        success, result = create_invoice_sheet(os_no, site, work, amount, qc_no)
+                    if success:
+                        st.success(f"已建立：{result}")
+                    else:
+                        st.error(f"失敗：{result}")
+                else:
+                    st.warning("資料唔完整，請手動檢查跟進表")
 
 st.sidebar.caption(f"更新：{datetime.now().strftime('%H:%M')}")
 st.sidebar.caption("同事可用此連結")
