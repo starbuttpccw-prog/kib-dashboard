@@ -210,6 +210,9 @@ elif page == "開發票":
                 st.success(f"找到 {len(found)} 筆記錄")
                 st.dataframe(found, use_container_width=True)
                 
+                # 取第一筆
+                row = found.iloc[0]
+                
                 # 根據實際結構提取（Unnamed 欄位）
                 site = ""
                 work = ""
@@ -263,6 +266,7 @@ elif page == "開發票":
                                 pass
                         if not work and len(val_str) > 15 and "battery" in val_str.lower():
                             work = val_str
+
                 
                 st.write(f"**地盤：** {site or '未搵到'}")
                 st.write(f"**工作：** {work or '未搵到'}")
