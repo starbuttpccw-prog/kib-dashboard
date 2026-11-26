@@ -55,8 +55,8 @@ def load_followup():
             _, done = downloader.next_chunk()
         fh.seek(0)
 
-        # 自動搵標題行
-        preview = pd.read_excel(fh, sheet_name=0, header=None, nrows=20)
+        # 自動搵標題行（讀 sheet "03"）
+        preview = pd.read_excel(fh, sheet_name="03", header=None, nrows=20)
         fh.seek(0)
         header_row = 0
         for i, row in preview.iterrows():
@@ -65,7 +65,7 @@ def load_followup():
                 header_row = i
                 break
 
-        df = pd.read_excel(fh, sheet_name=0, header=header_row)
+        df = pd.read_excel(fh, sheet_name="03", header=header_row)
         df = df.dropna(axis=1, how="all").dropna(axis=0, how="all")
         df.columns = [str(c).strip() for c in df.columns]
         return df
