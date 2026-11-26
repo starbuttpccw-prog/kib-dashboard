@@ -135,7 +135,19 @@ def create_invoice_sheet(os_no, site, work, amount, qc_no="", qty=1):
             with open(rels_path, encoding="utf-8") as f:
                 rels = f.read()
             
+            # 更穩陣搵 Target
             tgt_m = re.search(rf'Id="{rid}"[^>]*Target="([^"]+)"', rels)
+            if not tgt_m:
+                # 試另一種順序
+                tgt_m = re.search(rf'Target="([^"]+)"[^>]*Id="{rid}"', rels)
+            if not tgt_m:
+                # 再用更寬鬆嘅方法
+                for match in re.finditer(r'<Relationship[^>]+>', rels):
+                    tag = match.group(0)
+                    if f'Id="{rid}"' in tag or f"Id='{rid}'" in tag:
+                        tgt_m = re.search(r'Target="([^"]+)"', tag)
+                        if tgt_m:
+                            break
             if not tgt_m:
                 return False, "搵唔到 target"
             sheet_path = tgt_m.group(1)
