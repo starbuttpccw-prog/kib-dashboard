@@ -100,40 +100,43 @@ def create_invoice_sheet(os_no, site, work, amount, qc_no=""):
 
         wb = openpyxl.load_workbook(fh)
         
-        # 搵一個好嘅 template sheet（例如最新有內容嘅）
+        # 搵最新嘅正式發票 sheet（KB26xxxx 格式，排除 Summary）
         template = None
-        for name in reversed(wb.sheetnames):
-            if name.startswith("KB") and len(wb[name]['A1'].value or "") > 0:
-                template = name
-                break
-        if not template:
-            template = wb.sheetnames[-1]
+        candidates = [name for name in wb.sheetnames if name.startswith("KB26") and name != "Summary" and len(name) <= 10]
+        if candidates:
+            template = sorted(candidates)[-1]  # 最新嘅
+        else:
+            template = wb.sheetnames[-2] if len(wb.sheetnames) > 1 else wb.sheetnames[-1]
+
+        st.info(f"使用 template: {template}")
 
         # 新 sheet 名
         new_name = f"KB{datetime.now().strftime('%y%m%d%H%M')}"
         if new_name in wb.sheetnames:
-            new_name += "_new"
+            new_name += "a"
         
         # 抄 sheet
         source = wb[template]
         target = wb.copy_worksheet(source)
         target.title = new_name
 
-        # 填基本資料（根據常見位置調整）
-        # Job No. 通常喺某一格
-        for row in target.iter_rows(min_row=1, max_row=30, max_col=10):
+        # 填資料（根據實際結構）
+        # Invoice No
+        for row in target.iter_rows(min_row=1, max_row=15, max_col=10):
             for cell in row:
-                if cell.value and isinstance(cell.value, str):
-                    if "Job No" in cell.value or "OS" in str(cell.value):
-                        # 嘗試填 OS
-                        pass
-                    if "Quotation" in cell.value or "QC" in str(cell.value):
-                        pass
+                if cell.value and "Invoice No" in str(cell.value):
+                    # 右邊一格填新編號
+                    target.cell(row=cell.row, column=cell.column + 1).value = new_name
+                if cell.value and "Your Order No" in str(cell.value):
+                    target.cell(row=cell.row, column=cell.column + 1).value = os_no
+                if cell.value and "Quotation No" in str(cell.value):
+                    target.cell(row=cell.row, column=cell.column + 1).value = qc_no
+                if cell.value and "Project" in str(cell.value):
+                    target.cell(row=cell.row, column=cell.column + 1).value = f"{os_no} - {site}"
 
-        # 簡單填金額同描述（需要根據實際 template 調整位置）
-        # 假設描述喺某行
-        target['B10'] = f"{work} ({qc_no})" if qc_no else work
-        target['F10'] = amount
+        # 簡單填描述同金額（第19行附近）
+        target['B19'] = work
+        target['G19'] = amount
 
         # 儲存到臨時檔
         with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
@@ -146,6 +149,7 @@ def create_invoice_sheet(os_no, site, work, amount, qc_no=""):
         
         os.unlink(tmp_path)
         return True, new_name
+
     except Exception as e:
         return False, str(e)
 
