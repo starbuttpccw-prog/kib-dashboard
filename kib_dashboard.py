@@ -151,11 +151,24 @@ def create_invoice_sheet(os_no, site, work, amount, qc_no="", qty=1):
             if not tgt_m:
                 return False, "搵唔到 target"
             sheet_path = tgt_m.group(1)
+            # 修正路徑：Target 通常係 worksheets/sheetX.xml 或者 /xl/worksheets/...
+            sheet_path = sheet_path.lstrip("/")
+            if sheet_path.startswith("xl/"):
+                sheet_path = sheet_path[3:]
+            
+            src = os.path.join(tmpdir, "xl", sheet_path)
+            if not os.path.exists(src):
+                # 再試直接喺 worksheets 搵
+                alt_src = os.path.join(tmpdir, "xl", "worksheets", os.path.basename(sheet_path))
+                if os.path.exists(alt_src):
+                    src = alt_src
+                else:
+                    return False, f"搵唔到 source sheet: {src}"
             
             # 抄 sheet
-            src = os.path.join(tmpdir, "xl", sheet_path)
             new_sheet = f"sheet{new_id}.xml"
             dst = os.path.join(tmpdir, "xl", "worksheets", new_sheet)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(src, dst)
             
             # 抄 rels（如果有）
