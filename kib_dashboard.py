@@ -307,10 +307,78 @@ elif page == "開發票":
                         success, result = create_invoice_sheet(os_no, final_site, final_work, amount, qc_no)
                     if success:
                         st.success(f"已建立：{result}")
-                        st.info("請到 Google Drive 打開 KB260001.xlsx 檢查")
+                        st.info("請到 Google Drive 打開 KB260001.xlsx 檢查（應有 logo + 印）")
+                        
+                        # 下載 Excel + 嘗試 PDF
+                        if st.button("下載最新發票 Excel"):
+                            with st.spinner("準備 Excel..."):
+                                try:
+                                    request = service.files().get_media(fileId=KB_FILE_ID)
+                                    fh = io.BytesIO()
+                                    downloader = MediaIoBaseDownload(fh, request)
+                                    done = False
+                                    while not done:
+                                        _, done = downloader.next_chunk()
+                                    fh.seek(0)
+                                    excel_data = fh.getvalue()
+                                    st.download_button(
+                                        label="下載 KB260001.xlsx",
+                                        data=excel_data,
+                                        file_name="KB260001.xlsx",
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    )
+                                    
+                                    # 嘗試生成 PDF
+                                    st.write("---")
+                                    if st.button("嘗試生成 PDF 下載"):
+                                        with st.spinner("正在轉換 PDF（可能需時）..."):
+                                            pdf_bytes, err = generate_pdf_from_excel(excel_data, result)
+                                            if pdf_bytes:
+                                                st.download_button(
+                                                    label=f"下載 {result}.pdf",
+                                                    data=pdf_bytes,
+                                                    file_name=f"{result}.pdf",
+                                                    mime="application/pdf"
+                                                )
+                                                st.success("PDF 已生成（可能包含多頁，請自行提取需要嘅頁）")
+                                            else:
+                                                st.warning(f"PDF 生成失敗：{err}")
+                                                st.info("建議下載 Excel 後用本地 Excel 另存 PDF，質素較好。")
+                                except Exception as e:
+                                    st.error(f"下載失敗：{e}")
                     else:
                         st.error(f"失敗：{result}")
                 else:
                     st.warning("搵唔到金額")
+
+def generate_pdf_from_excel(excel_bytes, sheet_name):
+    """嘗試用 LibreOffice 將指定 sheet 轉成 PDF"""
+    try:
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmpdir:
+            xlsx_path = os.path.join(tmpdir, "invoice.xlsx")
+            with open(xlsx_path, "wb") as f:
+                f.write(excel_bytes)
+            
+            # 嘗試用 LibreOffice 轉換
+            cmd = [
+                "libreoffice", "--headless", "--convert-to", "pdf",
+                "--outdir", tmpdir, xlsx_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, timeout=60)
+            if result.returncode != 0:
+                return None, "LibreOffice 轉換失敗（環境可能未安裝）"
+            
+            pdf_path = os.path.join(tmpdir, "invoice.pdf")
+            if not os.path.exists(pdf_path):
+                return None, "PDF 未生成"
+            
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+            return pdf_bytes, None
+    except FileNotFoundError:
+        return None, "LibreOffice 未安裝"
+    except Exception as e:
+        return None, str(e)
 
 st.caption("KIB Dashboard • 安全版")
