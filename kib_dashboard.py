@@ -55,8 +55,26 @@ def load_followup():
             _, done = downloader.next_chunk()
         fh.seek(0)
 
-        # 自動搵標題行（讀 sheet "03"）
-        preview = pd.read_excel(fh, sheet_name="03", header=None, nrows=20)
+        fh.seek(0)
+        # 先列出所有 sheet 名稱
+        xl = pd.ExcelFile(fh)
+        sheet_names = xl.sheet_names
+        fh.seek(0)
+
+        # 優先搵包含 03 或 等 嘅 sheet
+        target_sheet = None
+        for name in sheet_names:
+            if "03" in str(name) or "等" in str(name):
+                target_sheet = name
+                break
+        if target_sheet is None and sheet_names:
+            target_sheet = sheet_names[0]  # 後備用第一個
+
+        st.sidebar.caption(f"可用 sheets: {', '.join(sheet_names)}")
+        st.sidebar.caption(f"而家讀: {target_sheet}")
+
+        # 自動搵標題行
+        preview = pd.read_excel(fh, sheet_name=target_sheet, header=None, nrows=20)
         fh.seek(0)
         header_row = 0
         for i, row in preview.iterrows():
@@ -65,7 +83,7 @@ def load_followup():
                 header_row = i
                 break
 
-        df = pd.read_excel(fh, sheet_name="03", header=header_row)
+        df = pd.read_excel(fh, sheet_name=target_sheet, header=header_row)
         df = df.dropna(axis=1, how="all").dropna(axis=0, how="all")
         df.columns = [str(c).strip() for c in df.columns]
         return df
