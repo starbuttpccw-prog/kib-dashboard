@@ -46,7 +46,7 @@ def load_followup_table(file_id):
             for hdr in range(0, 10):
                 try:
                     fh.seek(0)
-                    temp = pd.read_excel(fh, sheet_name=sheet, header=hdr, nrows=20)
+                    temp = pd.read_excel(fh, sheet_name=sheet, header=hdr)
                     if temp.empty:
                         continue
                     # 計分：有幾多欄包含有用字
@@ -231,7 +231,8 @@ if page == "總覽":
     st.header("📊 總覽")
     if not df.empty:
         st.metric("跟進表項目", len(df))
-        st.dataframe(df.head(15), width="stretch", height=300)
+        st.write(f"顯示前 50 行（共 {len(df)} 行）")
+        st.dataframe(df.head(50), width="stretch", height=500)
     else:
         st.warning("讀唔到跟進表")
 
@@ -245,7 +246,7 @@ elif page == "跟進表":
             ).any(axis=1)
             result = df[mask]
             st.write(f"找到 {len(result)} 筆")
-            st.dataframe(result.head(20), width="stretch")
+            st.dataframe(result.head(50), width="stretch", height=400)
         else:
             st.dataframe(df.head(20), width="stretch")
 
