@@ -250,15 +250,19 @@ elif page == "開發票":
                 with st.expander("原始數據"):
                     st.write(row.to_dict())
                 
-                if amount > 0 and work:
+                # 只要有金額就允許建立（用 OS 做描述後備）
+                if amount > 0:
+                    final_work = work or f"Work for {os_no}"
+                    final_site = site or os_no
                     with st.spinner("正在建立發票..."):
-                        success, result = create_invoice_sheet(os_no, site, work, amount, qc_no)
+                        success, result = create_invoice_sheet(os_no, final_site, final_work, amount, qc_no)
                     if success:
                         st.success(f"已建立：{result}")
+                        st.info("請到 Drive 檢查，之後用 Excel Print Bot 出 PDF")
                     else:
                         st.error(f"失敗：{result}")
                 else:
-                    st.warning("資料唔完整，請手動檢查跟進表")
+                    st.warning("搵唔到金額，請手動檢查跟進表")
 
 st.sidebar.caption(f"更新：{datetime.now().strftime('%H:%M')}")
 st.sidebar.caption("同事可用此連結")
