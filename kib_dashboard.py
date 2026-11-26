@@ -104,16 +104,39 @@ def create_invoice_sheet(os_no, site, work, amount, qc_no="", qty=1):
 
         # 先搵 template 同新編號
         wb_temp = openpyxl.load_workbook(fh)
+        
+        # 優先從 Summary 讀取最新編號
+        new_name = None
+        if 'Summary' in wb_temp.sheetnames:
+            summary = wb_temp['Summary']
+            # 搵 Summary 入面最大嘅 KB26xxxx
+            max_num = 0
+            for row in summary.iter_rows(min_row=1, max_row=50, max_col=5, values_only=True):
+                for cell in row:
+                    if cell and isinstance(cell, str) and re.match(r'^KB26\d{4}$', cell):
+                        num = int(cell[2:])
+                        if num > max_num:
+                            max_num = num
+            if max_num > 0:
+                new_name = f"KB{max_num + 1}"
+        
+        # 後備：從 sheet 名搵
+        if not new_name:
+            candidates = [name for name in wb_temp.sheetnames if re.match(r'^KB26\d{4}$', name)]
+            if candidates:
+                template = sorted(candidates)[-1]
+                last_num = int(template[2:])
+                new_name = f"KB{last_num + 1}"
+            else:
+                return False, "搵唔到有效編號"
+        
+        # 搵一個有 logo 嘅 template（最新正式 sheet）
         candidates = [name for name in wb_temp.sheetnames if re.match(r'^KB26\d{4}$', name)]
-        if not candidates:
-            return False, "搵唔到有效 template"
+        template = sorted(candidates)[-1] if candidates else wb_temp.sheetnames[-2]
         
-        template = sorted(candidates)[-1]
-        last_num = int(template[2:])
-        new_name = f"KB{last_num + 1}"
-        new_sheet_id = last_num + 1
-        
+        new_sheet_id = int(new_name[2:])
         st.info(f"Template: {template} → 新編號: {new_name}")
+
         unit_rate = round(amount / qty, 2) if qty else amount
 
         # Zip 層面抄
