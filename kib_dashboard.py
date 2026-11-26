@@ -46,7 +46,18 @@ def load_followup_table(file_id):
             for hdr in range(0, 10):
                 try:
                     fh.seek(0)
-                    temp = pd.read_excel(fh, sheet_name=sheet, header=hdr)
+                    try:
+                        fh.seek(0)
+                        # 先試讀 1000 行，避免太大
+                        temp = pd.read_excel(fh, sheet_name=sheet, header=hdr, nrows=1000)
+                        if len(temp) >= 1000:
+                            # 如果有 1000 行，再試讀全部
+                            fh.seek(0)
+                            temp_full = pd.read_excel(fh, sheet_name=sheet, header=hdr)
+                            if len(temp_full) > 1000:
+                                temp = temp_full
+                    except Exception:
+                        continue
                     if temp.empty:
                         continue
                     # 計分：有幾多欄包含有用字
