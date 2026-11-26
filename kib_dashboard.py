@@ -210,36 +210,59 @@ elif page == "開發票":
                 st.success(f"找到 {len(found)} 筆記錄")
                 st.dataframe(found, use_container_width=True)
                 
-                # 嘗試提取資料（取第一筆）
-                row = found.iloc[0]
-                
+                # 根據實際結構提取（Unnamed 欄位）
                 site = ""
                 work = ""
                 amount = 0.0
                 qc_no = ""
                 
-                # 直接掃描所有欄位嘅值
-                for col in found.columns:
-                    val = row[col]
-                    if pd.isna(val):
-                        continue
-                    val_str = str(val).strip()
-                    
-                    # QC 編號
-                    if val_str.upper().startswith("QC") and len(val_str) > 5:
-                        qc_no = val_str
-                    # 金額（純數字）
-                    elif val_str.replace(",", "").replace(".", "").isdigit() and float(val_str.replace(",", "")) > 100:
+                # 嘗試用位置提取
+                cols = list(found.columns)
+                try:
+                    # Unnamed: 4 通常係 QC
+                    if len(cols) > 4 and pd.notna(row[cols[4]]):
+                        val = str(row[cols[4]])
+                        if val.upper().startswith("QC"):
+                            qc_no = val
+                    # Unnamed: 6 通常係 地盤 - 工作
+                    if len(cols) > 6 and pd.notna(row[cols[6]]):
+                        val = str(row[cols[6]])
+                        if " - " in val:
+                            parts = val.split(" - ", 1)
+                            site = parts[0].strip()
+                            work = parts[1].strip()
+                        else:
+                            work = val
+                    # Unnamed: 8 係純工作
+                    if len(cols) > 8 and pd.notna(row[cols[8]]) and not work:
+                        work = str(row[cols[8]])
+                    # Unnamed: 9 係金額
+                    if len(cols) > 9 and pd.notna(row[cols[9]]):
                         try:
-                            amount = float(val_str.replace(",", ""))
+                            amount = float(str(row[cols[9]]).replace(",", ""))
                         except:
                             pass
-                    # 地盤 / 工作（較長文字）
-                    elif len(val_str) > 8 and not val_str.startswith("20") and "OS" not in val_str.upper():
-                        if not work:
+                except Exception as e:
+                    st.warning(f"提取出錯：{e}")
+                
+                # 後備：掃描所有值
+                if not qc_no or amount == 0:
+                    for col in cols:
+                        val = row[col]
+                        if pd.isna(val):
+                            continue
+                        val_str = str(val).strip()
+                        if not qc_no and val_str.upper().startswith("QC"):
+                            qc_no = val_str
+                        if amount == 0 and val_str.replace(".", "").replace(",", "").isdigit():
+                            try:
+                                num = float(val_str.replace(",", ""))
+                                if num > 100:
+                                    amount = num
+                            except:
+                                pass
+                        if not work and len(val_str) > 15 and "battery" in val_str.lower():
                             work = val_str
-                        elif not site:
-                            site = val_str
                 
                 st.write(f"**地盤：** {site or '未搵到'}")
                 st.write(f"**工作：** {work or '未搵到'}")
