@@ -37,30 +37,44 @@ def load_followup_table(file_id):
             _, done = downloader.next_chunk()
         fh.seek(0)
         
+        # 試多個 sheet 同 header
         xl = pd.ExcelFile(fh)
-        target_sheet = xl.sheet_names[0]
-        header_row = 0
+        best_df = None
+        best_score = 0
         
         for sheet in xl.sheet_names:
-            for hdr in range(0, 8):
+            for hdr in range(0, 10):
                 try:
-                    temp = pd.read_excel(fh, sheet_name=sheet, header=hdr, nrows=3)
-                    cols = [str(c).lower() for c in temp.columns]
-                    if any(k in " ".join(cols) for k in ["report", "報告", "編號", "site", "地盤", "os"]):
-                        target_sheet = sheet
-                        header_row = hdr
-                        break
+                    fh.seek(0)
+                    temp = pd.read_excel(fh, sheet_name=sheet, header=hdr, nrows=20)
+                    if temp.empty:
+                        continue
+                    # 計分：有幾多欄包含有用字
+                    score = 0
+                    cols_str = " ".join([str(c).lower() for c in temp.columns])
+                    if any(k in cols_str for k in ["report", "報告", "編號", "site", "地盤", "os", "qc", "金額"]):
+                        score += 5
+                    # 睇數據入面有幾多 OS / QC
+                    for col in temp.columns:
+                        vals = temp[col].astype(str).str.upper()
+                        score += vals.str.contains("OS26|QC26", na=False).sum()
+                    if score > best_score:
+                        best_score = score
+                        best_df = temp.copy()
+                        best_df.attrs['sheet'] = sheet
+                        best_df.attrs['header'] = hdr
                 except:
                     continue
-            if target_sheet != xl.sheet_names[0]:
-                break
         
-        fh.seek(0)
-        df = pd.read_excel(fh, sheet_name=target_sheet, header=header_row)
-        df = df.dropna(axis=1, how="all").dropna(axis=0, how="all")
-        df = df.astype(str).replace("nan", "").replace("None", "")
-        df.columns = [str(c).strip() for c in df.columns]
-        return df
+        if best_df is None or best_df.empty:
+            # 後備：讀第一個 sheet
+            fh.seek(0)
+            best_df = pd.read_excel(fh, header=None)
+        
+        best_df = best_df.dropna(axis=1, how="all").dropna(axis=0, how="all")
+        best_df = best_df.astype(str).replace("nan", "").replace("None", "")
+        best_df.columns = [str(c).strip() for c in best_df.columns]
+        return best_df
     except Exception as e:
         st.error(f"讀取跟進表失敗：{e}")
         return pd.DataFrame()
@@ -246,7 +260,7 @@ elif page == "開發票":
             st.error("請輸入 OS 編號")
         else:
             mask = df.astype(str).apply(
-                lambda col: col.str.lower().str.contains(os_no.lower(), na=False)
+                lambda col: col.str.contains(os_no, case=False, na=False, regex=False)
             ).any(axis=1)
             found = df[mask]
             
