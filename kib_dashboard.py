@@ -110,10 +110,16 @@ elif page == "跟進表":
     else:
         search = st.text_input("搜尋 QC / OS / 地盤 / 工作", placeholder="輸入關鍵字")
         if search:
-            mask = df.apply(lambda r: search.lower() in " ".join(r.astype(str)).lower(), axis=1)
-            result = df[mask]
-            st.success(f"找到 {len(result)} 筆")
-            st.dataframe(result, use_container_width=True, height=400)
+            try:
+                search_str = search.lower().strip()
+                mask = df.astype(str).apply(
+                    lambda col: col.str.lower().str.contains(search_str, na=False)
+                ).any(axis=1)
+                result = df[mask]
+                st.success(f"找到 {len(result)} 筆")
+                st.dataframe(result, use_container_width=True, height=400)
+            except Exception as e:
+                st.error(f"搜尋出錯：{e}")
         else:
             st.dataframe(df.head(30), use_container_width=True, height=400)
 
@@ -134,14 +140,21 @@ elif page == "開發票":
     os_no = st.text_input("OS 編號", placeholder="例如 OS26005161")
     if st.button("查詢並準備開單", use_container_width=True):
         if os_no and not df.empty:
-            mask = df.apply(lambda r: os_no.lower() in " ".join(r.astype(str)).lower(), axis=1)
-            found = df[mask]
-            if not found.empty:
-                st.success(f"找到 {len(found)} 筆相關記錄")
-                st.dataframe(found, use_container_width=True)
-                st.info("正式版會分配 KB 編號、出 PDF、更新跟進表 03→04")
-            else:
-                st.warning("跟進表搵唔到呢個 OS")
+            try:
+                # 更安全嘅搜尋方式
+                search_str = os_no.lower().strip()
+                mask = df.astype(str).apply(
+                    lambda col: col.str.lower().str.contains(search_str, na=False)
+                ).any(axis=1)
+                found = df[mask]
+                if not found.empty:
+                    st.success(f"找到 {len(found)} 筆相關記錄")
+                    st.dataframe(found, use_container_width=True)
+                    st.info("正式版會分配 KB 編號、出 PDF、更新跟進表 03→04")
+                else:
+                    st.warning("跟進表搵唔到呢個 OS")
+            except Exception as e:
+                st.error(f"搜尋出錯：{e}")
         else:
             st.warning("請輸入 OS 編號")
 
