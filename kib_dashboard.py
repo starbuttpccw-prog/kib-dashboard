@@ -213,30 +213,42 @@ elif page == "開發票":
                 # 嘗試提取資料（取第一筆）
                 row = found.iloc[0]
                 
-                # 嘗試搵欄位
                 site = ""
                 work = ""
-                amount = 0
+                amount = 0.0
                 qc_no = ""
                 
+                # 直接掃描所有欄位嘅值
                 for col in found.columns:
-                    val = str(row[col]) if pd.notna(row[col]) else ""
-                    if any(k in col.lower() for k in ["地盤", "site", "project"]):
-                        site = val
-                    if any(k in col.lower() for k in ["工作", "描述", "desc", "content"]):
-                        work = val
-                    if any(k in col.lower() for k in ["金額", "amount", "價錢"]):
+                    val = row[col]
+                    if pd.isna(val):
+                        continue
+                    val_str = str(val).strip()
+                    
+                    # QC 編號
+                    if val_str.upper().startswith("QC") and len(val_str) > 5:
+                        qc_no = val_str
+                    # 金額（純數字）
+                    elif val_str.replace(",", "").replace(".", "").isdigit() and float(val_str.replace(",", "")) > 100:
                         try:
-                            amount = float(val.replace(",", "").replace("$", ""))
+                            amount = float(val_str.replace(",", ""))
                         except:
                             pass
-                    if any(k in col.lower() for k in ["qc", "報價"]):
-                        qc_no = val
+                    # 地盤 / 工作（較長文字）
+                    elif len(val_str) > 8 and not val_str.startswith("20") and "OS" not in val_str.upper():
+                        if not work:
+                            work = val_str
+                        elif not site:
+                            site = val_str
                 
                 st.write(f"**地盤：** {site or '未搵到'}")
                 st.write(f"**工作：** {work or '未搵到'}")
                 st.write(f"**金額：** {amount}")
                 st.write(f"**QC：** {qc_no or '未搵到'}")
+                
+                # 顯示原始行方便確認
+                with st.expander("原始數據"):
+                    st.write(row.to_dict())
                 
                 if amount > 0 and work:
                     with st.spinner("正在建立發票..."):
