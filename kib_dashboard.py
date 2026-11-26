@@ -3,8 +3,12 @@ import pandas as pd
 from datetime import datetime
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 import io
+import openpyxl
+from openpyxl.utils import get_column_letter
+import tempfile
+import os
 
 st.set_page_config(
     page_title="KIB 統一管理",
@@ -17,23 +21,21 @@ st.markdown("""
 <style>
     .stButton > button { width: 100%; padding: 0.8rem; font-size: 1.05rem; border-radius: 12px; }
     .block-container { padding-top: 1rem; padding-bottom: 2rem; }
-    div[data-testid="metric-container"] {
-        background: #f8f9fa;
-        border-radius: 12px;
-        padding: 12px;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("🏢 KIB 統一管理")
 st.caption("祈保工程 · 跟進表 / 報價 / 發票")
 
-# ========== Google Drive ==========
+# ========== Config ==========
+FOLLOWUP_FILE_ID = "1o430tei9i5SrDqvvhe3TpUDx7icGRmXf"
+KB_FILE_ID = "17xlaPUUkWS0tE_L0aC0Sj4vF-_QuJ-Ql"  # 請更新成最新 KB260001 file_id
+
 def get_credentials():
     if "gcp_service_account" in st.secrets:
         return Credentials.from_service_account_info(
             st.secrets["gcp_service_account"],
-            scopes=["https://www.googleapis.com/auth/drive.readonly"]
+            scopes=["https://www.googleapis.com/auth/drive"]
         )
     return None
 
@@ -42,12 +44,13 @@ if creds is None:
     st.error("未設定 Google Drive 連接")
     st.stop()
 
+service = build("drive", "v3", credentials=creds)
+
+# ========== Load Follow-up ==========
 @st.cache_data(ttl=180)
 def load_followup():
     try:
-        service = build("drive", "v3", credentials=creds)
-        file_id = "1o430tei9i5SrDqvvhe3TpUDx7icGRmXf"
-        request = service.files().get_media(fileId=file_id)
+        request = service.files().get_media(fileId=FOLLOWUP_FILE_ID)
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
         done = False
@@ -55,31 +58,20 @@ def load_followup():
             _, done = downloader.next_chunk()
         fh.seek(0)
 
-        fh.seek(0)
-        # 先列出所有 sheet 名稱
         xl = pd.ExcelFile(fh)
         sheet_names = xl.sheet_names
         fh.seek(0)
 
-        # 優先搵包含 03 或 等 嘅 sheet
-        target_sheet = None
-        for name in sheet_names:
-            if "03" in str(name) or "等" in str(name):
-                target_sheet = name
-                break
-        if target_sheet is None and sheet_names:
-            target_sheet = sheet_names[0]  # 後備用第一個
+        target_sheet = next((n for n in sheet_names if "03" in str(n) or "等" in str(n)), sheet_names[0] if sheet_names else None)
+        st.sidebar.caption(f"Sheets: {', '.join(sheet_names)}")
+        st.sidebar.caption(f"讀取: {target_sheet}")
 
-        st.sidebar.caption(f"可用 sheets: {', '.join(sheet_names)}")
-        st.sidebar.caption(f"而家讀: {target_sheet}")
-
-        # 自動搵標題行
-        preview = pd.read_excel(fh, sheet_name=target_sheet, header=None, nrows=20)
+        preview = pd.read_excel(fh, sheet_name=target_sheet, header=None, nrows=15)
         fh.seek(0)
         header_row = 0
         for i, row in preview.iterrows():
             text = " ".join(str(v) for v in row if pd.notna(v))
-            if any(k in text for k in ["QC", "OS", "地盤", "金額", "狀態", "工作"]):
+            if any(k in text for k in ["QC", "OS", "地盤", "金額"]):
                 header_row = i
                 break
 
@@ -88,94 +80,123 @@ def load_followup():
         df.columns = [str(c).strip() for c in df.columns]
         return df
     except Exception as e:
-        st.error(f"讀取失敗：{e}")
+        st.error(f"讀取跟進表失敗：{e}")
         return pd.DataFrame()
 
 df = load_followup()
 
-# ========== 頁面 ==========
+# ========== Invoice Creation ==========
+def create_invoice_sheet(os_no, site, work, amount, qc_no=""):
+    """下載 KB260001，抄 sheet，填資料，上傳"""
+    try:
+        # 下載
+        request = service.files().get_media(fileId=KB_FILE_ID)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        fh.seek(0)
+
+        wb = openpyxl.load_workbook(fh)
+        
+        # 搵一個好嘅 template sheet（例如最新有內容嘅）
+        template = None
+        for name in reversed(wb.sheetnames):
+            if name.startswith("KB") and len(wb[name]['A1'].value or "") > 0:
+                template = name
+                break
+        if not template:
+            template = wb.sheetnames[-1]
+
+        # 新 sheet 名
+        new_name = f"KB{datetime.now().strftime('%y%m%d%H%M')}"
+        if new_name in wb.sheetnames:
+            new_name += "_new"
+        
+        # 抄 sheet
+        source = wb[template]
+        target = wb.copy_worksheet(source)
+        target.title = new_name
+
+        # 填基本資料（根據常見位置調整）
+        # Job No. 通常喺某一格
+        for row in target.iter_rows(min_row=1, max_row=30, max_col=10):
+            for cell in row:
+                if cell.value and isinstance(cell.value, str):
+                    if "Job No" in cell.value or "OS" in str(cell.value):
+                        # 嘗試填 OS
+                        pass
+                    if "Quotation" in cell.value or "QC" in str(cell.value):
+                        pass
+
+        # 簡單填金額同描述（需要根據實際 template 調整位置）
+        # 假設描述喺某行
+        target['B10'] = f"{work} ({qc_no})" if qc_no else work
+        target['F10'] = amount
+
+        # 儲存到臨時檔
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+            wb.save(tmp.name)
+            tmp_path = tmp.name
+
+        # 上傳覆蓋
+        media = MediaFileUpload(tmp_path, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        service.files().update(fileId=KB_FILE_ID, media_body=media).execute()
+        
+        os.unlink(tmp_path)
+        return True, new_name
+    except Exception as e:
+        return False, str(e)
+
+# ========== Pages ==========
 page = st.sidebar.radio("功能", ["總覽", "跟進表", "開報價", "開發票"])
 
 if page == "總覽":
     st.header("📊 總覽")
-    if df.empty:
-        st.warning("讀唔到跟進表")
+    if not df.empty:
+        st.metric("跟進表項目", len(df))
+        st.dataframe(df.head(10), use_container_width=True)
     else:
-        # 嘗試搵狀態欄
-        status_col = None
-        for c in df.columns:
-            if any(k in str(c) for k in ["狀態", "status", "階段"]):
-                status_col = c
-                break
-
-        col1, col2 = st.columns(2)
-        col1.metric("總項目", len(df))
-        if status_col:
-            waiting = df[df[status_col].astype(str).str.contains("03|等", na=False)].shape[0]
-            invoiced = df[df[status_col].astype(str).str.contains("04|已開", na=False)].shape[0]
-            col2.metric("等 OS (03)", waiting)
-            st.metric("已開未收 (04)", invoiced)
-        else:
-            st.info("未搵到狀態欄，顯示原始數據")
-
-        st.subheader("最近項目")
-        st.dataframe(df.head(15), use_container_width=True, height=300)
+        st.warning("讀唔到跟進表")
 
 elif page == "跟進表":
     st.header("🔍 跟進表")
-    if df.empty:
-        st.warning("無數據")
-    else:
-        search = st.text_input("搜尋 QC / OS / 地盤 / 工作", placeholder="輸入關鍵字")
+    search = st.text_input("搜尋")
+    if not df.empty:
         if search:
-            try:
-                search_str = search.lower().strip()
-                mask = df.astype(str).apply(
-                    lambda col: col.str.lower().str.contains(search_str, na=False)
-                ).any(axis=1)
-                result = df[mask]
-                st.success(f"找到 {len(result)} 筆")
-                st.dataframe(result, use_container_width=True, height=400)
-            except Exception as e:
-                st.error(f"搜尋出錯：{e}")
+            mask = df.astype(str).apply(lambda col: col.str.lower().str.contains(search.lower(), na=False)).any(axis=1)
+            st.dataframe(df[mask], use_container_width=True)
         else:
-            st.dataframe(df.head(30), use_container_width=True, height=400)
+            st.dataframe(df.head(20), use_container_width=True)
 
 elif page == "開報價":
-    st.header("📄 開新報價")
-    with st.form("new_qc"):
-        site = st.text_input("地盤")
-        work = st.text_input("工作內容")
-        amount = st.number_input("金額 (HK$)", min_value=0, step=100)
-        person = st.selectbox("負責人", ["Carmen", "Peter", "Brandon", "Neo", "Paul", "Tammy", "Jason", "Sean"])
-        submitted = st.form_submit_button("準備開報價", use_container_width=True)
-        if submitted and site and work:
-            st.success(f"已記錄：{site} - {work} (${amount:,})")
-            st.info("下一步會寫入 QC260001 並呼叫 Excel Print Bot 出 PDF")
+    st.header("📄 開報價")
+    st.info("開發票功能優先開發中，報價稍後加入")
 
 elif page == "開發票":
     st.header("🧾 開發票")
-    os_no = st.text_input("OS 編號", placeholder="例如 OS26005161")
-    if st.button("查詢並準備開單", use_container_width=True):
-        if os_no and not df.empty:
-            try:
-                # 更安全嘅搜尋方式
-                search_str = os_no.lower().strip()
-                mask = df.astype(str).apply(
-                    lambda col: col.str.lower().str.contains(search_str, na=False)
-                ).any(axis=1)
-                found = df[mask]
-                if not found.empty:
-                    st.success(f"找到 {len(found)} 筆相關記錄")
-                    st.dataframe(found, use_container_width=True)
-                    st.info("正式版會分配 KB 編號、出 PDF、更新跟進表 03→04")
+    st.warning("實驗功能：會直接修改 KB260001.xlsx")
+    
+    with st.form("invoice_form"):
+        os_no = st.text_input("OS 編號", placeholder="OS2600xxxx")
+        site = st.text_input("地盤")
+        work = st.text_input("工作內容")
+        amount = st.number_input("金額", min_value=0.0, step=100.0)
+        qc_no = st.text_input("報價編號（可選）", placeholder="QC260xxx")
+        submitted = st.form_submit_button("建立發票 Sheet", type="primary")
+        
+        if submitted:
+            if os_no and work and amount > 0:
+                with st.spinner("正在建立發票..."):
+                    success, result = create_invoice_sheet(os_no, site, work, amount, qc_no)
+                if success:
+                    st.success(f"已建立新 sheet：{result}")
+                    st.info("請到 Google Drive 打開 KB260001.xlsx 檢查，之後用 Excel Print Bot 出 PDF")
                 else:
-                    st.warning("跟進表搵唔到呢個 OS")
-            except Exception as e:
-                st.error(f"搜尋出錯：{e}")
-        else:
-            st.warning("請輸入 OS 編號")
+                    st.error(f"失敗：{result}")
+            else:
+                st.error("請填 OS、工作內容同金額")
 
-st.sidebar.divider()
-st.sidebar.caption(f"更新時間：{datetime.now().strftime('%H:%M')}")
-st.sidebar.caption("手機可直接開此頁面使用")
+st.sidebar.caption(f"更新：{datetime.now().strftime('%H:%M')}")
+st.sidebar.caption("同事可用此連結")
